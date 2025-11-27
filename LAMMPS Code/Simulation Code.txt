@@ -1,0 +1,133 @@
+variable potential string y94
+variable v equal 2
+
+variable respath string ${v}x100_mm_s-1_SiC_${potential}
+
+print "${respath}"
+shell mkdir ${respath}
+shell mkdir ${respath}/log_files
+shell mkdir ${respath}/restart_files
+
+# ------------------------ INITIALIZATION ----------------------------
+units 		metal
+dimension	3
+boundary	s	p	s
+atom_style	atomic
+
+
+read_restart cut_sic_eq.restart.10000  
+reset_timestep 0
+fix 13 all property/atom mol
+
+group gpDia type 1
+group gpCTbd  molecule  3
+group gpCTtsbd  molecule 2
+group gpCTmob molecule 1
+
+print "diamond tool created"
+
+# groups atoms
+group gpSiC type 2 3
+group gpWPbd molecule 6
+group gpWPtsbd molecule 5 
+group gpWPmob molecule 4
+
+group mobile subtract all gpCTtsbd gpWPtsbd
+
+print "Workpiece created"
+
+#-------------------------------------------------
+
+
+# define the mass of atoms
+mass 1 12 #.0107 # C (g/mol)
+mass 2 28 #.0855 # Si (g/mol)
+mass 3 12 #.0107 # C (g/mol)
+
+
+
+#lattice fcc 4.3596 origin 0 0 0 
+
+# ------------------------ FORCE FIELDS ------------------------------
+if "${potential} == TersoffScr" then "pair_style atomistica TersoffScr" &
+else "pair_style	tersoff"
+ #variable index string ${potential}
+if "${potential} == EA"  then "pair_coeff	* * SiC_Erhart-Albe.tersoff C Si C" &
+elif "${potential} == y94"  "pair_coeff	* * SiC_1994.tersoff C Si C" &
+elif "${potential} == TersoffScr"  "pair_coeff	* * C Si C" &
+else "print 'choose the variable -potential to be y94 or EA'" & quit
+
+# ------------------------- SETTINGS ---------------------------------#####
+min_style cg
+minimize 1.0e-4 1.0e-6 100 1000
+
+# DEFORMATION
+
+fix 1 gpWPall nvt temp 300.0 300.0 0.05 #iso 1.0 1.0 0.5
+fix 2 gpCTall nvt temp 300.0 300.0 0.05 #iso 1.0 1.0 0.5
+
+unfix 1
+unfix 2
+
+compute myCTtemp gpCTmob temp/partial 0 1 1
+compute myWPtemp gpWPmob temp/partial 0 1 1
+compute myCTTStemp gpCTtsbd temp
+compute myWPTStemp gpWPtsbd temp/partial 0 1 1
+
+timestep 0.0005 # set 1 femtosecond per step
+
+fix 1 gpWPtsbd nvt temp 300.0 300.0 0.05 #iso 1.0 1.0 0.5
+fix_modify 1 temp myWPTStemp
+fix 2 gpCTtsbd nvt temp 300.0 300.0 0.05 #iso 1.0 1.0 0.5
+fix_modify 2 temp myCTTStemp
+
+fix 3 gpWPbd move linear 0 0 0
+fix 4 gpCTbd move linear 0 0 0 units box  # cutting speed = v * 100 (m s^-1 in the x-direction)
+
+fix 5 mobile nve
+
+fix 10 all balance 30 1.05 shift xy 10 1.05 out ${respath}/log_files/tmp.balance
+
+compute ke all ke/atom
+fix 12 all ave/atom 10 50 500 c_ke
+
+set group gpCTmob mol 1
+set group gpCTtsbd mol 2
+set group gpCTbd mol 3
+
+set group gpWPmob mol 4
+set group gpWPtsbd mol 5
+set group gpWPbd mol 6
+
+shell cp log.lammps ${respath}/log_files/
+log ${respath}/log_files/cut_sic_re_eq.log
+
+run 0 # 20 ps
+
+print "Complete re-equilibrium"
+
+# start cutting
+
+log ${respath}/log_files/cut_sic_cut.log
+#reset_timestep 0
+
+unfix 4
+fix 4 gpCTbd move linear -$v 0 0 units box  # cutting speed = v * 100 (m s^-1 in the x-direction)
+
+compute	           s all stress/atom NULL
+compute	           k all ke/atom
+
+dump	 0dumpCSP all custom  500 ${respath}/dump.cutsic.*.lammpstrj id type mol x y z vx vy vz fx fy fz c_k c_s[1] c_s[2] c_s[3] c_s[4] c_s[5] c_s[6]
+dump_modify 0dumpCSP element C Si C
+
+
+write_restart cut_sic_re_eq.0000.restart
+restart 10000 ${respath}/restart_files/cut_sic.*.restart
+
+# For the cutting advancement of 20 nm
+variable Nstep equal ceil(400000/$v)
+run ${Nstep}
+
+# SIMULATION DONE
+
+print "All done"
